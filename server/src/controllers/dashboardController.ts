@@ -3,41 +3,43 @@ import { Transaction } from '../models/Transaction';
 import { Person } from '../models/Person';
 import { FunctionEvent } from '../models/FunctionEvent';
 import { AuthRequest } from '../types';
+import { getDeletedPersonIds, getOverallTotals } from '../services/totals.service';
 
 export const getDashboard = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const now = new Date();
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const deleted = await getDeletedPersonIds(userId);
+  const txFilter: Record<string, unknown> = { userId };
+  if (deleted.length > 0) txFilter.personId = { $nin: deleted };
 
   const [totals, totalPeople, totalFunctions, recentTransactions, upcomingFunctions, recentPeople] =
     await Promise.all([
-      Transaction.aggregate([
-        { $match: { userId: { $in: [userId] } } },
-        { $group: { _id: '$type', total: { $sum: '$amount' } } },
-      ]).exec(),
+      getOverallTotals(userId),
       Person.countDocuments({ userId, isDeleted: false }),
       FunctionEvent.countDocuments({ userId }),
-      Transaction.find({ userId })
+      Transaction.find(txFilter)
         .populate('personId', 'husbandName wifeName area')
-        .populate('functionId', 'name type date')
-        .sort({ transactionDate: -1 })
-        .limit(10)
+        .populate('functionId', 'name type category date')
+        .sort({ transactionDate: -1, createdAt: -1 })
+        .limit(8)
         .lean(),
-      FunctionEvent.find({ userId, date: { $gte: now } })
+      // Upcoming = Relative Functions (other people's events) that are today or later.
+      FunctionEvent.find({ userId, category: 'RELATIVE', date: { $gte: startOfToday } })
         .sort({ date: 1 })
         .limit(5)
         .lean(),
       Person.find({ userId, isDeleted: false }).sort({ createdAt: -1 }).limit(5).lean(),
     ]);
 
-  const totalReceived = totals.find((t: { _id: string }) => t._id === 'RECEIVED')?.total || 0;
-  const totalGiven = totals.find((t: { _id: string }) => t._id === 'GIVEN')?.total || 0;
-
   res.json({
     success: true,
     data: {
-      totalReceived,
-      totalGiven,
-      netDifference: totalReceived - totalGiven,
+      totalReceived: totals.received,
+      totalGiven: totals.given,
+      netDifference: totals.received - totals.given,
+      totalTransactions: totals.transactionCount,
       totalPeople,
       totalFunctions,
       recentTransactions,

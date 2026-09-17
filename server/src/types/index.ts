@@ -27,3 +27,9 @@ export interface PaginationQuery {
   page?: string;
   limit?: string;
 }
+
+export interface Totals {
+  received: number;
+  given: number;
+  transactionCount: number;
+}

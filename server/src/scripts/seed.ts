@@ -8,47 +8,100 @@ import { Transaction } from '../models/Transaction';
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/moi-management';
 
+const DEMO_EMAIL = 'demo@moi.app';
+const DEMO_PASSWORD = 'demo1234';
+
+const daysFromNow = (days: number): Date => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  return d;
+};
+
 async function seed() {
   await mongoose.connect(MONGODB_URI);
-  console.log('✅ Connected to MongoDB');
+  console.log('Connected to MongoDB');
 
-  // Clean existing data
-  await Promise.all([
-    User.deleteMany({}),
-    Person.deleteMany({}),
-    FunctionEvent.deleteMany({}),
-    Transaction.deleteMany({}),
-  ]);
-  console.log('🗑️  Cleared existing data');
+  // Reset only the demo user's data so other accounts are untouched.
+  const existing = await User.findOne({ email: DEMO_EMAIL });
+  if (existing) {
+    await Promise.all([
+      Person.deleteMany({ userId: existing._id }),
+      FunctionEvent.deleteMany({ userId: existing._id }),
+      Transaction.deleteMany({ userId: existing._id }),
+      User.deleteOne({ _id: existing._id }),
+    ]);
+    console.log('Cleared previous demo data');
+  }
 
-  // Create demo user
-  const passwordHash = await bcrypt.hash('demo1234', 12);
-  const user = await User.create({
-    name: 'Demo User',
-    email: 'demo@moi.app',
-    passwordHash,
-  });
-  console.log(`👤 Created user: ${user.email}`);
-
+  const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 12);
+  const user = await User.create({ name: 'Demo User', email: DEMO_EMAIL, passwordHash });
   const userId = user._id;
+  console.log(`Created user: ${user.email}`);
 
-  // Create people
+  // People
   const [suresh, ravi, karthik] = await Person.create([
-    { userId, area: 'Palladam', husbandName: 'Suresh', wifeName: 'Kavitha', phone: '9876543210' },
-    { userId, area: 'Tiruppur', husbandName: 'Ravi', wifeName: 'Meena', phone: '9876543211' },
-    { userId, area: 'Coimbatore', husbandName: 'Karthik', wifeName: 'Priya', phone: '9876543212' },
+    {
+      userId,
+      area: 'Palladam',
+      husbandName: 'Suresh',
+      wifeName: 'Kavitha',
+      phone: '9876543210',
+      address: '12, Main Road, Palladam',
+    },
+    {
+      userId,
+      area: 'Tiruppur',
+      husbandName: 'Ravi',
+      wifeName: 'Meena',
+      phone: '9876543211',
+      address: '5, Kumaran Street, Tiruppur',
+    },
+    {
+      userId,
+      area: 'Coimbatore',
+      husbandName: 'Karthik',
+      wifeName: 'Priya',
+      phone: '9876543212',
+      address: '48, RS Puram, Coimbatore',
+    },
   ]);
-  console.log('👨‍👩‍👧 Created 3 people');
+  console.log('Created 3 people');
 
-  // Create functions
-  const [krishWedding, raviWedding, housewarming] = await FunctionEvent.create([
-    { userId, name: 'Krish Wedding', type: 'Wedding', date: new Date('2024-03-15'), location: 'Palladam Town Hall' },
-    { userId, name: 'Ravi Wedding', type: 'Wedding', date: new Date('2024-06-20'), location: 'Tiruppur Kalyana Mahal' },
-    { userId, name: 'Housewarming', type: 'Housewarming', date: new Date('2024-09-10'), location: 'Coimbatore' },
+  // Functions: two we host (OUR), one we attend (RELATIVE, a few weeks out).
+  const [krishWedding, housewarming, raviWedding] = await FunctionEvent.create([
+    {
+      userId,
+      name: 'Krish Wedding',
+      category: 'OUR',
+      type: 'Wedding',
+      date: daysFromNow(-120),
+      location: 'Palladam Town Hall',
+      notes: 'Reception in the evening',
+    },
+    {
+      userId,
+      name: 'Housewarming',
+      category: 'OUR',
+      type: 'Housewarming',
+      date: daysFromNow(-30),
+      location: 'New house, Coimbatore',
+    },
+    {
+      userId,
+      name: 'Ravi Wedding',
+      category: 'RELATIVE',
+      type: 'Wedding',
+      date: daysFromNow(21),
+      time: '18:30',
+      location: 'Tiruppur Kalyana Mahal',
+      notes: 'Take the gift box along',
+    },
   ]);
-  console.log('🎉 Created 3 functions');
+  console.log('Created 3 functions');
+  void raviWedding;
 
-  // Create transactions
+  // Transactions
   await Transaction.create([
     {
       userId,
@@ -56,17 +109,19 @@ async function seed() {
       functionId: krishWedding._id,
       type: 'RECEIVED',
       amount: 5000,
-      transactionDate: new Date('2024-03-15'),
+      transactionDate: krishWedding.date,
+      attended: true,
       notes: 'Wedding gift from Suresh & Kavitha',
     },
     {
       userId,
       personId: ravi._id,
-      functionId: raviWedding._id,
+      functionId: krishWedding._id,
       type: 'RECEIVED',
       amount: 2000,
-      transactionDate: new Date('2024-06-20'),
-      notes: 'Received at Ravi wedding',
+      transactionDate: krishWedding.date,
+      attended: false,
+      notes: 'Sent through a relative',
     },
     {
       userId,
@@ -74,15 +129,16 @@ async function seed() {
       functionId: housewarming._id,
       type: 'GIVEN',
       amount: 3000,
-      transactionDate: new Date('2024-09-10'),
+      transactionDate: housewarming.date,
+      attended: true,
       notes: 'Given for Karthik housewarming',
     },
   ]);
-  console.log('💰 Created 3 transactions');
+  console.log('Created 3 transactions');
 
-  console.log('\n✅ Seed complete!');
-  console.log('📧 Login: demo@moi.app');
-  console.log('🔑 Password: demo1234');
+  console.log('\nSeed complete!');
+  console.log(`Login:    ${DEMO_EMAIL}`);
+  console.log(`Password: ${DEMO_PASSWORD}`);
 
   await mongoose.disconnect();
   process.exit(0);

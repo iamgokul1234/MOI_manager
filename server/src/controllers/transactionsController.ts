@@ -2,66 +2,109 @@ import { Response } from 'express';
 import mongoose from 'mongoose';
 import { Transaction } from '../models/Transaction';
 import { Person } from '../models/Person';
-import { FunctionEvent } from '../models/FunctionEvent';
 import { AuthRequest } from '../types';
-import { createTransactionSchema, updateTransactionSchema } from '../validators/transaction.validator';
-import { getPaginationParams, buildPaginationMeta } from '../utils';
+import {
+  attendanceSchema,
+  createTransactionSchema,
+  updateTransactionSchema,
+} from '../validators/transaction.validator';
+import {
+  buildPaginationMeta,
+  escapeRegex,
+  getPaginationParams,
+  isObjectId,
+  parseDate,
+  parseNumber,
+  sendValidationError,
+  toObjectId,
+} from '../utils';
+import {
+  findOwnedFunction,
+  findOwnedPerson,
+  findOwnedTransaction,
+} from '../services/ownership.service';
+import { getDeletedPersonIds } from '../services/totals.service';
+
+const PERSON_FIELDS = 'husbandName wifeName area phone isDeleted';
+const FUNCTION_FIELDS = 'name type category date time location';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const populateTx = <Q extends mongoose.Query<any, any>>(query: Q): Q =>
+  query.populate('personId', PERSON_FIELDS).populate('functionId', FUNCTION_FIELDS) as Q;
 
 export const getTransactions = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const { personId, functionId, type, area, dateFrom, dateTo, minAmount, maxAmount, page, limit } =
-    req.query as Record<string, string>;
+  const q = req.query as Record<string, string | undefined>;
+  const { skip, limit, page } = getPaginationParams(q.page, q.limit);
 
-  const { skip, limit: lim, page: pg } = getPaginationParams(page, limit);
+  const filter: mongoose.FilterQuery<typeof Transaction> = { userId: toObjectId(userId) };
 
-  const filter: mongoose.FilterQuery<typeof Transaction> = { userId };
+  if (q.personId) {
+    if (!isObjectId(q.personId)) {
+      res.status(400).json({ success: false, message: 'Invalid person id' });
+      return;
+    }
+    filter.personId = toObjectId(q.personId);
+  }
+  if (q.functionId) {
+    if (!isObjectId(q.functionId)) {
+      res.status(400).json({ success: false, message: 'Invalid function id' });
+      return;
+    }
+    filter.functionId = toObjectId(q.functionId);
+  }
+  if (q.type === 'RECEIVED' || q.type === 'GIVEN') filter.type = q.type;
+  if (q.attended === 'true') filter.attended = true;
+  if (q.attended === 'false') filter.attended = false;
 
-  if (personId) filter.personId = new mongoose.Types.ObjectId(personId);
-  if (functionId) filter.functionId = new mongoose.Types.ObjectId(functionId);
-  if (type) filter.type = type;
+  const dateFrom = parseDate(q.dateFrom);
+  const dateTo = parseDate(q.dateTo, true);
   if (dateFrom || dateTo) {
     filter.transactionDate = {};
-    if (dateFrom) filter.transactionDate.$gte = new Date(dateFrom);
-    if (dateTo) filter.transactionDate.$lte = new Date(dateTo);
-  }
-  if (minAmount || maxAmount) {
-    filter.amount = {};
-    if (minAmount) filter.amount.$gte = parseFloat(minAmount);
-    if (maxAmount) filter.amount.$lte = parseFloat(maxAmount);
+    if (dateFrom) filter.transactionDate.$gte = dateFrom;
+    if (dateTo) filter.transactionDate.$lte = dateTo;
   }
 
-  // Area filter needs person lookup
-  let personIdsForArea: mongoose.Types.ObjectId[] | undefined;
-  if (area) {
-    const persons = await Person.find({
-      userId,
-      area: { $regex: area, $options: 'i' },
-      isDeleted: false,
-    }).select('_id');
-    personIdsForArea = persons.map((p) => p._id);
-    filter.personId = { $in: personIdsForArea };
+  const minAmount = parseNumber(q.minAmount);
+  const maxAmount = parseNumber(q.maxAmount);
+  if (minAmount !== undefined || maxAmount !== undefined) {
+    filter.amount = {};
+    if (minAmount !== undefined) filter.amount.$gte = minAmount;
+    if (maxAmount !== undefined) filter.amount.$lte = maxAmount;
+  }
+
+  // Exclude soft-deleted people unless a specific person was requested.
+  if (!q.personId) {
+    const personFilter: mongoose.FilterQuery<typeof Person> = { userId, isDeleted: false };
+    if (q.area && q.area.trim()) {
+      personFilter.area = { $regex: `^${escapeRegex(q.area.trim())}$`, $options: 'i' };
+      const persons = await Person.find(personFilter).select('_id').lean();
+      filter.personId = { $in: persons.map((p) => p._id) };
+    } else {
+      const deleted = await getDeletedPersonIds(userId);
+      if (deleted.length > 0) filter.personId = { $nin: deleted };
+    }
   }
 
   const [transactions, total] = await Promise.all([
-    Transaction.find(filter)
-      .populate('personId', 'husbandName wifeName area phone')
-      .populate('functionId', 'name type date')
-      .sort({ transactionDate: -1 })
+    populateTx(Transaction.find(filter))
+      .sort({ transactionDate: -1, createdAt: -1 })
       .skip(skip)
-      .limit(lim)
+      .limit(limit)
       .lean(),
     Transaction.countDocuments(filter),
   ]);
 
-  res.json({ success: true, data: transactions, pagination: buildPaginationMeta(total, pg, lim) });
+  res.json({ success: true, data: transactions, pagination: buildPaginationMeta(total, page, limit) });
 };
 
 export const getTransactionById = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const transaction = await Transaction.findOne({ _id: req.params.id, userId })
-    .populate('personId', 'husbandName wifeName area phone')
-    .populate('functionId', 'name type date')
-    .lean();
+  if (!isObjectId(req.params.id)) {
+    res.status(404).json({ success: false, message: 'Transaction not found' });
+    return;
+  }
+  const transaction = await populateTx(Transaction.findOne({ _id: req.params.id, userId })).lean();
 
   if (!transaction) {
     res.status(404).json({ success: false, message: 'Transaction not found' });
@@ -74,18 +117,14 @@ export const getTransactionById = async (req: AuthRequest, res: Response): Promi
 export const createTransaction = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
   const result = createTransactionSchema.safeParse(req.body);
+  if (!result.success) return sendValidationError(res, result.error);
 
-  if (!result.success) {
-    res.status(400).json({ success: false, message: result.error.errors[0].message });
-    return;
-  }
+  const { personId, functionId, type, amount, transactionDate, attended, notes } = result.data;
 
-  const { personId, functionId, type, amount, transactionDate, notes } = result.data;
-
-  // Ownership validation
+  // Ownership validation: both references must belong to the current user.
   const [person, fn] = await Promise.all([
-    Person.findOne({ _id: personId, userId, isDeleted: false }),
-    FunctionEvent.findOne({ _id: functionId, userId }),
+    findOwnedPerson(userId, personId),
+    findOwnedFunction(userId, functionId),
   ]);
 
   if (!person) {
@@ -99,58 +138,74 @@ export const createTransaction = async (req: AuthRequest, res: Response): Promis
 
   const transaction = await Transaction.create({
     userId,
-    personId,
-    functionId,
+    personId: person._id,
+    functionId: fn._id,
     type,
     amount,
     transactionDate: new Date(transactionDate),
+    // Recording live implies presence, so attended defaults to true.
+    attended: attended ?? true,
     notes,
   });
 
-  const populated = await Transaction.findById(transaction._id)
-    .populate('personId', 'husbandName wifeName area phone')
-    .populate('functionId', 'name type date')
-    .lean();
-
-  res.status(201).json({ success: true, data: populated, message: 'Transaction added successfully' });
+  const populated = await populateTx(Transaction.findById(transaction._id)).lean();
+  res.status(201).json({ success: true, data: populated, message: 'Moi entry added' });
 };
 
 export const updateTransaction = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
   const result = updateTransactionSchema.safeParse(req.body);
+  if (!result.success) return sendValidationError(res, result.error);
 
-  if (!result.success) {
-    res.status(400).json({ success: false, message: result.error.errors[0].message });
-    return;
-  }
-
-  const updateData: Record<string, unknown> = { ...result.data };
-  if (updateData.transactionDate) updateData.transactionDate = new Date(updateData.transactionDate as string);
-
-  const transaction = await Transaction.findOneAndUpdate(
-    { _id: req.params.id, userId },
-    updateData,
-    { new: true }
-  )
-    .populate('personId', 'husbandName wifeName area phone')
-    .populate('functionId', 'name type date');
-
+  const transaction = await findOwnedTransaction(userId, req.params.id);
   if (!transaction) {
     res.status(404).json({ success: false, message: 'Transaction not found' });
     return;
   }
 
-  res.json({ success: true, data: transaction, message: 'Transaction updated successfully' });
+  const data = result.data;
+  if (data.type !== undefined) transaction.type = data.type;
+  if (data.amount !== undefined) transaction.amount = data.amount;
+  if (data.transactionDate !== undefined) transaction.transactionDate = new Date(data.transactionDate);
+  if (data.attended !== undefined) transaction.attended = data.attended;
+  if (data.notes !== undefined) transaction.notes = data.notes || undefined;
+
+  await transaction.save();
+  const populated = await populateTx(Transaction.findById(transaction._id)).lean();
+  res.json({ success: true, data: populated, message: 'Moi entry updated' });
+};
+
+/** Single-tap strike-through toggle. Only touches this one transaction. */
+export const updateAttendance = async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.user!.userId;
+  const result = attendanceSchema.safeParse(req.body);
+  if (!result.success) return sendValidationError(res, result.error);
+
+  const transaction = await findOwnedTransaction(userId, req.params.id);
+  if (!transaction) {
+    res.status(404).json({ success: false, message: 'Transaction not found' });
+    return;
+  }
+
+  transaction.attended = result.data.attended;
+  await transaction.save();
+
+  res.json({
+    success: true,
+    data: { _id: transaction._id, attended: transaction.attended },
+    message: result.data.attended ? 'Marked as attended' : 'Marked as not attended',
+  });
 };
 
 export const deleteTransaction = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const transaction = await Transaction.findOneAndDelete({ _id: req.params.id, userId });
+  const transaction = await findOwnedTransaction(userId, req.params.id);
 
   if (!transaction) {
     res.status(404).json({ success: false, message: 'Transaction not found' });
     return;
   }
 
-  res.json({ success: true, message: 'Transaction deleted successfully' });
+  await transaction.deleteOne();
+  res.json({ success: true, message: 'Moi entry deleted' });
 };

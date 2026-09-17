@@ -4,28 +4,25 @@ import { Transaction } from '../models/Transaction';
 import { Person } from '../models/Person';
 import { FunctionEvent } from '../models/FunctionEvent';
 import { AuthRequest } from '../types';
+import { activeTransactionMatch, getOverallTotals } from '../services/totals.service';
+import { toObjectId } from '../utils';
 
 export const getSummary = async (req: AuthRequest, res: Response): Promise<void> => {
-  const userId = new mongoose.Types.ObjectId(req.user!.userId);
+  const userId = req.user!.userId;
 
   const [totals, totalPeople, totalFunctions] = await Promise.all([
-    Transaction.aggregate([
-      { $match: { userId } },
-      { $group: { _id: '$type', total: { $sum: '$amount' } } },
-    ]),
+    getOverallTotals(userId),
     Person.countDocuments({ userId, isDeleted: false }),
     FunctionEvent.countDocuments({ userId }),
   ]);
 
-  const totalReceived = totals.find((t) => t._id === 'RECEIVED')?.total || 0;
-  const totalGiven = totals.find((t) => t._id === 'GIVEN')?.total || 0;
-
   res.json({
     success: true,
     data: {
-      totalReceived,
-      totalGiven,
-      netDifference: totalReceived - totalGiven,
+      totalReceived: totals.received,
+      totalGiven: totals.given,
+      netDifference: totals.received - totals.given,
+      totalTransactions: totals.transactionCount,
       totalPeople,
       totalFunctions,
     },
@@ -33,29 +30,25 @@ export const getSummary = async (req: AuthRequest, res: Response): Promise<void>
 };
 
 export const getFunctionReport = async (req: AuthRequest, res: Response): Promise<void> => {
-  const userId = new mongoose.Types.ObjectId(req.user!.userId);
+  const userId = req.user!.userId;
+  const match = await activeTransactionMatch(userId);
 
-  const report = await Transaction.aggregate([
-    { $match: { userId } },
+  const report = await Transaction.aggregate<{
+    _id: mongoose.Types.ObjectId;
+    received: number;
+    given: number;
+    transactionCount: number;
+    people: mongoose.Types.ObjectId[];
+    function: { name: string; type: string; category: string; date: Date };
+  }>([
+    match,
     {
       $group: {
-        _id: { functionId: '$functionId', type: '$type' },
-        total: { $sum: '$amount' },
-        count: { $sum: 1 },
+        _id: '$functionId',
+        received: { $sum: { $cond: [{ $eq: ['$type', 'RECEIVED'] }, '$amount', 0] } },
+        given: { $sum: { $cond: [{ $eq: ['$type', 'GIVEN'] }, '$amount', 0] } },
+        transactionCount: { $sum: 1 },
         people: { $addToSet: '$personId' },
-      },
-    },
-    {
-      $group: {
-        _id: '$_id.functionId',
-        received: {
-          $sum: { $cond: [{ $eq: ['$_id.type', 'RECEIVED'] }, '$total', 0] },
-        },
-        given: {
-          $sum: { $cond: [{ $eq: ['$_id.type', 'GIVEN'] }, '$total', 0] },
-        },
-        transactionCount: { $sum: '$count' },
-        allPeople: { $push: '$people' },
       },
     },
     {
@@ -67,35 +60,36 @@ export const getFunctionReport = async (req: AuthRequest, res: Response): Promis
       },
     },
     { $unwind: '$function' },
-    {
-      $project: {
-        name: '$function.name',
-        type: '$function.type',
-        date: '$function.date',
-        received: 1,
-        given: 1,
-        transactionCount: 1,
-        allPeople: 1,
-      },
-    },
-    { $sort: { date: -1 } },
+    { $sort: { 'function.date': -1 } },
   ]);
 
-  // Compute unique people count per function
-  const result = report.map((r) => ({
-    ...r,
-    peopleCount: new Set(r.allPeople.flat().map((id: mongoose.Types.ObjectId) => id.toString())).size,
-    allPeople: undefined,
-  }));
-
-  res.json({ success: true, data: result });
+  res.json({
+    success: true,
+    data: report.map((r) => ({
+      _id: r._id,
+      name: r.function.name,
+      type: r.function.type,
+      category: r.function.category,
+      date: r.function.date,
+      received: r.received,
+      given: r.given,
+      transactionCount: r.transactionCount,
+      peopleCount: r.people.length,
+    })),
+  });
 };
 
 export const getAreaReport = async (req: AuthRequest, res: Response): Promise<void> => {
-  const userId = new mongoose.Types.ObjectId(req.user!.userId);
+  const userId = req.user!.userId;
 
-  const report = await Transaction.aggregate([
-    { $match: { userId } },
+  const report = await Transaction.aggregate<{
+    _id: string;
+    received: number;
+    given: number;
+    transactionCount: number;
+    people: mongoose.Types.ObjectId[];
+  }>([
+    { $match: { userId: toObjectId(userId) } },
     {
       $lookup: {
         from: 'people',
@@ -105,60 +99,86 @@ export const getAreaReport = async (req: AuthRequest, res: Response): Promise<vo
       },
     },
     { $unwind: '$person' },
+    { $match: { 'person.isDeleted': { $ne: true } } },
     {
       $group: {
         _id: '$person.area',
         received: { $sum: { $cond: [{ $eq: ['$type', 'RECEIVED'] }, '$amount', 0] } },
         given: { $sum: { $cond: [{ $eq: ['$type', 'GIVEN'] }, '$amount', 0] } },
+        transactionCount: { $sum: 1 },
         people: { $addToSet: '$personId' },
       },
     },
-    {
-      $project: {
-        area: '$_id',
-        received: 1,
-        given: 1,
-        peopleCount: { $size: '$people' },
-      },
-    },
-    { $sort: { received: -1 } },
+    { $sort: { received: -1, given: -1 } },
   ]);
 
-  res.json({ success: true, data: report });
+  res.json({
+    success: true,
+    data: report.map((r) => ({
+      area: r._id,
+      received: r.received,
+      given: r.given,
+      transactionCount: r.transactionCount,
+      peopleCount: r.people.length,
+    })),
+  });
 };
 
 export const getYearlyReport = async (req: AuthRequest, res: Response): Promise<void> => {
-  const userId = new mongoose.Types.ObjectId(req.user!.userId);
-  const { year } = req.query as Record<string, string>;
+  const userId = req.user!.userId;
+  const { year } = req.query as Record<string, string | undefined>;
 
-  const matchStage: mongoose.PipelineStage.Match['$match'] = { userId };
+  const extra: Record<string, unknown> = {};
   if (year && year !== 'all') {
     const y = parseInt(year, 10);
-    matchStage.transactionDate = {
-      $gte: new Date(`${y}-01-01`),
-      $lte: new Date(`${y}-12-31T23:59:59`),
+    if (Number.isNaN(y)) {
+      res.status(400).json({ success: false, message: 'Year must be a number or "all"' });
+      return;
+    }
+    extra.transactionDate = {
+      $gte: new Date(Date.UTC(y, 0, 1)),
+      $lt: new Date(Date.UTC(y + 1, 0, 1)),
     };
   }
+  const match = await activeTransactionMatch(userId, extra);
 
-  const report = await Transaction.aggregate([
-    { $match: matchStage },
+  const report = await Transaction.aggregate<{
+    _id: number;
+    received: number;
+    given: number;
+    transactionCount: number;
+  }>([
+    match,
     {
       $group: {
-        _id: { year: { $year: '$transactionDate' }, type: '$type' },
-        total: { $sum: '$amount' },
-        count: { $sum: 1 },
-      },
-    },
-    {
-      $group: {
-        _id: '$_id.year',
-        received: { $sum: { $cond: [{ $eq: ['$_id.type', 'RECEIVED'] }, '$total', 0] } },
-        given: { $sum: { $cond: [{ $eq: ['$_id.type', 'GIVEN'] }, '$total', 0] } },
-        transactionCount: { $sum: '$count' },
+        _id: { $year: '$transactionDate' },
+        received: { $sum: { $cond: [{ $eq: ['$type', 'RECEIVED'] }, '$amount', 0] } },
+        given: { $sum: { $cond: [{ $eq: ['$type', 'GIVEN'] }, '$amount', 0] } },
+        transactionCount: { $sum: 1 },
       },
     },
     { $sort: { _id: -1 } },
   ]);
 
-  res.json({ success: true, data: report.map((r) => ({ year: r._id, ...r, _id: undefined })) });
+  res.json({
+    success: true,
+    data: report.map((r) => ({
+      year: r._id,
+      received: r.received,
+      given: r.given,
+      netDifference: r.received - r.given,
+      transactionCount: r.transactionCount,
+    })),
+  });
+};
+
+/** Distinct years that have at least one transaction, for the year selector. */
+export const getReportYears = async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.user!.userId;
+  const rows = await Transaction.aggregate<{ _id: number }>([
+    { $match: { userId: toObjectId(userId) } },
+    { $group: { _id: { $year: '$transactionDate' } } },
+    { $sort: { _id: -1 } },
+  ]);
+  res.json({ success: true, data: rows.map((r) => r._id) });
 };

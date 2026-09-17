@@ -10,17 +10,18 @@ import {
 } from '../controllers/peopleController';
 import { authenticate } from '../middleware/auth';
 import { asyncHandler } from '../middleware/errorHandler';
+import { AuthRequest } from '../types';
 
 const router = Router();
 
 router.use(authenticate);
 
-router.get('/areas', asyncHandler(getAreas));
-router.get('/check-duplicate', asyncHandler(checkDuplicate));
-router.get('/', asyncHandler(getPeople));
-router.get('/:id', asyncHandler(getPersonById));
-router.post('/', asyncHandler(createPerson));
-router.patch('/:id', asyncHandler(updatePerson));
-router.delete('/:id', asyncHandler(deletePerson));
+router.get('/areas', asyncHandler<AuthRequest>(getAreas));
+router.get('/check-duplicate', asyncHandler<AuthRequest>(checkDuplicate));
+router.get('/', asyncHandler<AuthRequest>(getPeople));
+router.get('/:id', asyncHandler<AuthRequest>(getPersonById));
+router.post('/', asyncHandler<AuthRequest>(createPerson));
+router.patch('/:id', asyncHandler<AuthRequest>(updatePerson));
+router.delete('/:id', asyncHandler<AuthRequest>(deletePerson));
 
 export default router;

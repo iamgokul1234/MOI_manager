@@ -4,111 +4,100 @@ import { Person } from '../models/Person';
 import { Transaction } from '../models/Transaction';
 import { AuthRequest } from '../types';
 import { createPersonSchema, updatePersonSchema } from '../validators/person.validator';
-import { getPaginationParams, buildPaginationMeta } from '../utils';
+import {
+  buildPaginationMeta,
+  escapeRegex,
+  getPaginationParams,
+  isObjectId,
+  parseNumber,
+  sendValidationError,
+} from '../utils';
+import { getTotalsByPerson } from '../services/totals.service';
+import { findOwnedPerson } from '../services/ownership.service';
+
+type SortKey = 'recent' | 'active' | 'name' | 'area' | 'received' | 'given';
 
 export const getPeople = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const {
-    search,
-    area,
-    hasTransactions,
-    minReceived,
-    maxReceived,
-    minGiven,
-    maxGiven,
-    sort,
-    page,
-    limit,
-  } = req.query as Record<string, string>;
-
-  const { skip, limit: lim, page: pg } = getPaginationParams(page, limit);
+  const q = req.query as Record<string, string | undefined>;
+  const { skip, limit, page } = getPaginationParams(q.page, q.limit);
 
   const filter: mongoose.FilterQuery<typeof Person> = { userId, isDeleted: false };
 
-  if (search) {
-    filter.$or = [
-      { husbandName: { $regex: search, $options: 'i' } },
-      { wifeName: { $regex: search, $options: 'i' } },
-      { area: { $regex: search, $options: 'i' } },
-      { phone: { $regex: search, $options: 'i' } },
-    ];
+  if (q.search && q.search.trim()) {
+    const rx = { $regex: escapeRegex(q.search.trim()), $options: 'i' };
+    filter.$or = [{ husbandName: rx }, { wifeName: rx }, { area: rx }, { phone: rx }];
+  }
+  if (q.area && q.area.trim()) {
+    filter.area = { $regex: `^${escapeRegex(q.area.trim())}$`, $options: 'i' };
   }
 
-  if (area) filter.area = { $regex: area, $options: 'i' };
+  // People lists are family-sized (hundreds, not millions), so we compute
+  // totals for the filtered set and paginate in memory. This keeps the totals
+  // derived from Transactions rather than denormalised on the Person.
+  const people = await Person.find(filter).lean();
+  const totalsMap = await getTotalsByPerson(
+    userId,
+    people.map((p) => p._id)
+  );
 
-  let people = await Person.find(filter)
-    .sort(sort === 'name' ? { husbandName: 1 } : sort === 'area' ? { area: 1 } : { createdAt: -1 })
-    .lean();
+  let rows = people.map((p) => {
+    const t = totalsMap[p._id.toString()];
+    return {
+      ...p,
+      totalReceived: t?.received || 0,
+      totalGiven: t?.given || 0,
+      transactionCount: t?.transactionCount || 0,
+      lastTransaction: t?.lastTransaction || null,
+    };
+  });
 
-  // Compute totals from transactions
-  const peopleIds = people.map((p) => p._id);
-  const totals = await Transaction.aggregate([
-    { $match: { userId: new mongoose.Types.ObjectId(userId), personId: { $in: peopleIds } } },
-    {
-      $group: {
-        _id: { personId: '$personId', type: '$type' },
-        total: { $sum: '$amount' },
-        lastDate: { $max: '$transactionDate' },
-      },
-    },
-  ]);
+  if (q.hasTransactions === 'true') rows = rows.filter((p) => p.transactionCount > 0);
+  if (q.hasTransactions === 'false') rows = rows.filter((p) => p.transactionCount === 0);
 
-  const totalsMap: Record<
-    string,
-    { received: number; given: number; lastTransaction: Date | null }
-  > = {};
-  for (const t of totals) {
-    const id = t._id.personId.toString();
-    if (!totalsMap[id]) totalsMap[id] = { received: 0, given: 0, lastTransaction: null };
-    if (t._id.type === 'RECEIVED') {
-      totalsMap[id].received = t.total;
-      if (!totalsMap[id].lastTransaction || t.lastDate > totalsMap[id].lastTransaction!) {
-        totalsMap[id].lastTransaction = t.lastDate;
-      }
-    } else {
-      totalsMap[id].given = t.total;
-      if (!totalsMap[id].lastTransaction || t.lastDate > totalsMap[id].lastTransaction!) {
-        totalsMap[id].lastTransaction = t.lastDate;
-      }
+  const minReceived = parseNumber(q.minReceived);
+  const maxReceived = parseNumber(q.maxReceived);
+  const minGiven = parseNumber(q.minGiven);
+  const maxGiven = parseNumber(q.maxGiven);
+  if (minReceived !== undefined) rows = rows.filter((p) => p.totalReceived >= minReceived);
+  if (maxReceived !== undefined) rows = rows.filter((p) => p.totalReceived <= maxReceived);
+  if (minGiven !== undefined) rows = rows.filter((p) => p.totalGiven >= minGiven);
+  if (maxGiven !== undefined) rows = rows.filter((p) => p.totalGiven <= maxGiven);
+
+  const sort = (q.sort as SortKey) || 'recent';
+  const byName = (p: (typeof rows)[number]) =>
+    (p.husbandName || p.wifeName || '').toLocaleLowerCase();
+  const time = (d: Date | string | null | undefined) => (d ? new Date(d).getTime() : 0);
+
+  rows.sort((a, b) => {
+    switch (sort) {
+      case 'name':
+        return byName(a).localeCompare(byName(b));
+      case 'area':
+        return a.area.localeCompare(b.area) || byName(a).localeCompare(byName(b));
+      case 'active':
+        return time(b.lastTransaction) - time(a.lastTransaction);
+      case 'received':
+        return b.totalReceived - a.totalReceived;
+      case 'given':
+        return b.totalGiven - a.totalGiven;
+      case 'recent':
+      default:
+        return time(b.createdAt) - time(a.createdAt);
     }
-  }
+  });
 
-  // Apply transaction-based filters
-  let filtered = people.map((p) => ({
-    ...p,
-    totalReceived: totalsMap[p._id.toString()]?.received || 0,
-    totalGiven: totalsMap[p._id.toString()]?.given || 0,
-    lastTransaction: totalsMap[p._id.toString()]?.lastTransaction || null,
-  }));
-
-  if (hasTransactions === 'true') {
-    filtered = filtered.filter((p) => p.totalReceived > 0 || p.totalGiven > 0);
-  } else if (hasTransactions === 'false') {
-    filtered = filtered.filter((p) => p.totalReceived === 0 && p.totalGiven === 0);
-  }
-
-  if (minReceived) filtered = filtered.filter((p) => p.totalReceived >= parseFloat(minReceived));
-  if (maxReceived) filtered = filtered.filter((p) => p.totalReceived <= parseFloat(maxReceived));
-  if (minGiven) filtered = filtered.filter((p) => p.totalGiven >= parseFloat(minGiven));
-  if (maxGiven) filtered = filtered.filter((p) => p.totalGiven <= parseFloat(maxGiven));
-
-  const total = filtered.length;
-  const paginated = filtered.slice(skip, skip + lim);
-
+  const total = rows.length;
   res.json({
     success: true,
-    data: paginated,
-    pagination: buildPaginationMeta(total, pg, lim),
+    data: rows.slice(skip, skip + limit),
+    pagination: buildPaginationMeta(total, page, limit),
   });
 };
 
 export const getPersonById = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const person = await Person.findOne({
-    _id: req.params.id,
-    userId,
-    isDeleted: false,
-  }).lean();
+  const person = await findOwnedPerson(userId, req.params.id);
 
   if (!person) {
     res.status(404).json({ success: false, message: 'Person not found' });
@@ -116,8 +105,8 @@ export const getPersonById = async (req: AuthRequest, res: Response): Promise<vo
   }
 
   const transactions = await Transaction.find({ userId, personId: person._id })
-    .populate('functionId', 'name type date')
-    .sort({ transactionDate: -1 })
+    .populate('functionId', 'name type category date time location')
+    .sort({ transactionDate: -1, createdAt: -1 })
     .lean();
 
   const totalReceived = transactions
@@ -127,15 +116,20 @@ export const getPersonById = async (req: AuthRequest, res: Response): Promise<vo
     .filter((t) => t.type === 'GIVEN')
     .reduce((sum, t) => sum + t.amount, 0);
 
-  const functionIds = [...new Set(transactions.map((t) => t.functionId.toString()))];
+  const functionIds = new Set(
+    transactions
+      .map((t) => (t.functionId as unknown as { _id?: mongoose.Types.ObjectId })?._id?.toString())
+      .filter(Boolean)
+  );
 
   res.json({
     success: true,
     data: {
-      ...person,
+      ...person.toObject(),
       totalReceived,
       totalGiven,
-      totalFunctions: functionIds.length,
+      transactionCount: transactions.length,
+      totalFunctions: functionIds.size,
       lastTransaction: transactions[0]?.transactionDate || null,
       transactions,
     },
@@ -145,11 +139,7 @@ export const getPersonById = async (req: AuthRequest, res: Response): Promise<vo
 export const createPerson = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
   const result = createPersonSchema.safeParse(req.body);
-
-  if (!result.success) {
-    res.status(400).json({ success: false, message: result.error.errors[0].message });
-    return;
-  }
+  if (!result.success) return sendValidationError(res, result.error);
 
   const person = await Person.create({ ...result.data, userId });
   res.status(201).json({ success: true, data: person, message: 'Person added successfully' });
@@ -158,31 +148,46 @@ export const createPerson = async (req: AuthRequest, res: Response): Promise<voi
 export const updatePerson = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
   const result = updatePersonSchema.safeParse(req.body);
+  if (!result.success) return sendValidationError(res, result.error);
 
-  if (!result.success) {
-    res.status(400).json({ success: false, message: result.error.errors[0].message });
-    return;
-  }
-
-  const person = await Person.findOneAndUpdate(
-    { _id: req.params.id, userId, isDeleted: false },
-    result.data,
-    { new: true }
-  );
-
+  const person = await findOwnedPerson(userId, req.params.id);
   if (!person) {
     res.status(404).json({ success: false, message: 'Person not found' });
     return;
   }
 
+  const data = result.data;
+  const next = {
+    husbandName: data.husbandName === undefined ? person.husbandName : data.husbandName || undefined,
+    wifeName: data.wifeName === undefined ? person.wifeName : data.wifeName || undefined,
+  };
+  if (!next.husbandName && !next.wifeName) {
+    res.status(400).json({
+      success: false,
+      message: 'At least one of husband name or wife name must be provided',
+    });
+    return;
+  }
+
+  (Object.keys(data) as (keyof typeof data)[]).forEach((key) => {
+    const value = data[key];
+    if (value === undefined) return;
+    if (value === null || value === '') {
+      person.set(key, undefined);
+    } else {
+      person.set(key, value);
+    }
+  });
+
+  await person.save();
   res.json({ success: true, data: person, message: 'Person updated successfully' });
 };
 
 export const deletePerson = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const { confirm } = req.query;
+  const confirm = req.query.confirm === 'true';
 
-  const person = await Person.findOne({ _id: req.params.id, userId, isDeleted: false });
+  const person = await findOwnedPerson(userId, req.params.id);
   if (!person) {
     res.status(404).json({ success: false, message: 'Person not found' });
     return;
@@ -190,10 +195,12 @@ export const deletePerson = async (req: AuthRequest, res: Response): Promise<voi
 
   const transactionCount = await Transaction.countDocuments({ userId, personId: person._id });
 
-  if (transactionCount > 0 && confirm !== 'true') {
-    res.status(200).json({
+  if (transactionCount > 0 && !confirm) {
+    res.status(409).json({
       success: false,
-      message: `This person has ${transactionCount} transaction(s). Set confirm=true to proceed with deletion.`,
+      message: `This person has ${transactionCount} Moi ${
+        transactionCount === 1 ? 'entry' : 'entries'
+      }. Confirm to hide them from your records anyway.`,
       data: { requiresConfirmation: true, transactionCount },
     });
     return;
@@ -202,34 +209,50 @@ export const deletePerson = async (req: AuthRequest, res: Response): Promise<voi
   person.isDeleted = true;
   await person.save();
 
-  res.json({ success: true, message: 'Person deleted successfully' });
+  res.json({
+    success: true,
+    message:
+      transactionCount > 0
+        ? `Person removed. ${transactionCount} past ${
+            transactionCount === 1 ? 'entry is' : 'entries are'
+          } no longer counted in totals.`
+        : 'Person removed successfully',
+  });
 };
 
 export const checkDuplicate = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const { husbandName, wifeName, area } = req.query as Record<string, string>;
+  const { husbandName, wifeName, area, excludeId } = req.query as Record<string, string | undefined>;
 
-  const filter: mongoose.FilterQuery<typeof Person> = { userId, isDeleted: false };
-  const orConditions = [];
-
-  if (husbandName)
-    orConditions.push({ husbandName: { $regex: `^${husbandName}$`, $options: 'i' } });
-  if (wifeName) orConditions.push({ wifeName: { $regex: `^${wifeName}$`, $options: 'i' } });
+  const orConditions: Record<string, unknown>[] = [];
+  if (husbandName && husbandName.trim()) {
+    orConditions.push({
+      husbandName: { $regex: `^${escapeRegex(husbandName.trim())}$`, $options: 'i' },
+    });
+  }
+  if (wifeName && wifeName.trim()) {
+    orConditions.push({ wifeName: { $regex: `^${escapeRegex(wifeName.trim())}$`, $options: 'i' } });
+  }
 
   if (orConditions.length === 0) {
     res.json({ success: true, data: { duplicates: [] } });
     return;
   }
 
-  if (area) filter.area = { $regex: `^${area}$`, $options: 'i' };
-  filter.$or = orConditions;
+  const filter: mongoose.FilterQuery<typeof Person> = { userId, isDeleted: false, $or: orConditions };
+  if (area && area.trim()) {
+    filter.area = { $regex: `^${escapeRegex(area.trim())}$`, $options: 'i' };
+  }
+  if (isObjectId(excludeId)) {
+    filter._id = { $ne: excludeId };
+  }
 
-  const duplicates = await Person.find(filter).lean();
+  const duplicates = await Person.find(filter).limit(5).lean();
   res.json({ success: true, data: { duplicates } });
 };
 
 export const getAreas = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
   const areas = await Person.distinct('area', { userId, isDeleted: false });
-  res.json({ success: true, data: areas.sort() });
+  res.json({ success: true, data: areas.filter(Boolean).sort((a, b) => a.localeCompare(b)) });
 };

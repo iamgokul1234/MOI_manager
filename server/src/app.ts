@@ -4,6 +4,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { env } from './config/env';
 import { errorHandler } from './middleware/errorHandler';
+import { generalRateLimiter } from './middleware/rateLimiter';
 
 import authRoutes from './routes/auth.routes';
 import peopleRoutes from './routes/people.routes';
@@ -15,11 +16,19 @@ import dashboardRoutes from './routes/dashboard.routes';
 
 const app = express();
 
+// Render / Railway / most PaaS sit behind a reverse proxy; needed for
+// correct client IPs (rate limiting) and Secure cookies.
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 app.use(
   cors({
-    origin: env.clientUrl,
+    origin: (origin, callback) => {
+      // Allow same-origin / non-browser requests (no Origin header) and listed origins.
+      if (!origin || env.clientUrls.includes(origin)) return callback(null, true);
+      return callback(new Error(`Origin ${origin} is not allowed by CORS`));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -30,6 +39,8 @@ app.use(
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+app.use('/api', generalRateLimiter);
 
 // Health check
 app.get('/api/health', (_req, res) => {

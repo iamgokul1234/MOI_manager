@@ -8,12 +8,26 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
+const sameSiteRaw = (process.env.COOKIE_SAME_SITE || 'lax').toLowerCase();
+const cookieSameSite: 'lax' | 'strict' | 'none' =
+  sameSiteRaw === 'none' ? 'none' : sameSiteRaw === 'strict' ? 'strict' : 'lax';
+
 export const env = {
   port: parseInt(process.env.PORT || '5000', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
   mongoUri: process.env.MONGODB_URI as string,
   jwtSecret: process.env.JWT_SECRET as string,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  clientUrl: process.env.CLIENT_URL || 'http://localhost:5173',
+  /** Comma-separated list of allowed browser origins. */
+  clientUrls: (process.env.CLIENT_URL || 'http://localhost:5173')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+  /**
+   * 'lax' for same-site deployments (default). Set to 'none' when the API and
+   * the SPA live on different domains (e.g. Vercel + Render); 'none' forces
+   * the Secure flag so it only works over HTTPS.
+   */
+  cookieSameSite,
   isProduction: process.env.NODE_ENV === 'production',
 };

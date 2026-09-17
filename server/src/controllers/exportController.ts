@@ -3,109 +3,129 @@ import { Person } from '../models/Person';
 import { Transaction } from '../models/Transaction';
 import { FunctionEvent } from '../models/FunctionEvent';
 import { AuthRequest } from '../types';
+import { getDeletedPersonIds, getTotalsByFunction, getTotalsByPerson } from '../services/totals.service';
 
 const escapeCSV = (val: unknown): string => {
   if (val === null || val === undefined) return '';
   const str = String(val);
-  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
+  // Guard against spreadsheet formula injection as well as delimiter collisions.
+  const needsQuote = /[",\n\r]/.test(str) || /^[=+\-@]/.test(str);
+  return needsQuote ? `"${str.replace(/"/g, '""')}"` : str;
 };
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const formatDate = (date: Date | null | undefined): string => {
   if (!date) return '';
-  return new Date(date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const d = new Date(date);
+  return `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+};
+
+const sendCSV = (res: Response, filename: string, headers: string[], rows: unknown[][]): void => {
+  const csv = [headers.join(','), ...rows.map((r) => r.map(escapeCSV).join(','))].join('\r\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  // BOM so Excel opens the ₹ / Unicode names correctly.
+  res.send('﻿' + csv);
 };
 
 export const exportPeople = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const people = await Person.find({ userId, isDeleted: false }).lean();
-  const peopleIds = people.map((p) => p._id);
+  const people = await Person.find({ userId, isDeleted: false }).sort({ area: 1 }).lean();
+  const totals = await getTotalsByPerson(
+    userId,
+    people.map((p) => p._id)
+  );
 
-  const txAgg = await Transaction.aggregate([
-    { $match: { userId: { $in: [userId] }, personId: { $in: peopleIds } } },
-    {
-      $group: {
-        _id: { personId: '$personId', type: '$type' },
-        total: { $sum: '$amount' },
-      },
-    },
-  ]);
+  const headers = [
+    'Husband Name',
+    'Wife Name',
+    'Area',
+    'Phone',
+    'Alternate Phone',
+    'Address',
+    'Total Received',
+    'Total Given',
+    'Entries',
+    'Last Transaction',
+    'Notes',
+  ];
+  const rows = people.map((p) => {
+    const t = totals[p._id.toString()];
+    return [
+      p.husbandName,
+      p.wifeName,
+      p.area,
+      p.phone,
+      p.alternatePhone,
+      p.address,
+      t?.received || 0,
+      t?.given || 0,
+      t?.transactionCount || 0,
+      formatDate(t?.lastTransaction),
+      p.notes,
+    ];
+  });
 
-  const totalsMap: Record<string, { received: number; given: number }> = {};
-  for (const t of txAgg) {
-    const id = t._id.personId.toString();
-    if (!totalsMap[id]) totalsMap[id] = { received: 0, given: 0 };
-    if (t._id.type === 'RECEIVED') totalsMap[id].received = t.total;
-    else totalsMap[id].given = t.total;
-  }
-
-  const headers = ['Husband Name', 'Wife Name', 'Area', 'Phone', 'Alternate Phone', 'Address', 'Total Received', 'Total Given', 'Notes'];
-  const rows = people.map((p) => [
-    escapeCSV(p.husbandName),
-    escapeCSV(p.wifeName),
-    escapeCSV(p.area),
-    escapeCSV(p.phone),
-    escapeCSV(p.alternatePhone),
-    escapeCSV(p.address),
-    totalsMap[p._id.toString()]?.received || 0,
-    totalsMap[p._id.toString()]?.given || 0,
-    escapeCSV(p.notes),
-  ]);
-
-  const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="people.csv"');
-  res.send(csv);
+  sendCSV(res, 'people.csv', headers, rows);
 };
 
 export const exportTransactions = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-  const transactions = await Transaction.find({ userId })
+  const deleted = await getDeletedPersonIds(userId);
+  const filter: Record<string, unknown> = { userId };
+  if (deleted.length > 0) filter.personId = { $nin: deleted };
+
+  const transactions = await Transaction.find(filter)
     .populate('personId', 'husbandName wifeName area')
-    .populate('functionId', 'name type')
+    .populate('functionId', 'name type category date')
     .sort({ transactionDate: -1 })
     .lean();
 
-  const headers = ['Date', 'Person', 'Area', 'Function', 'Type', 'Amount', 'Notes'];
+  const headers = ['Date', 'Person', 'Area', 'Function', 'Function Category', 'Type', 'Amount', 'Attended', 'Notes'];
   const rows = transactions.map((t) => {
-    const person = t.personId as unknown as Record<string, unknown>;
-    const fn = t.functionId as unknown as Record<string, unknown>;
+    const person = t.personId as unknown as Record<string, string | undefined> | null;
+    const fn = t.functionId as unknown as Record<string, string | undefined> | null;
     const personName = [person?.husbandName, person?.wifeName].filter(Boolean).join(' & ');
     return [
       formatDate(t.transactionDate),
-      escapeCSV(personName),
-      escapeCSV(person?.area),
-      escapeCSV(fn?.name),
-      t.type,
+      personName,
+      person?.area,
+      fn?.name,
+      fn?.category === 'RELATIVE' ? 'Relative Function' : 'Our Function',
+      t.type === 'RECEIVED' ? 'Received' : 'Given',
       t.amount,
-      escapeCSV(t.notes),
-    ].join(',');
+      t.attended ? 'Yes' : 'No',
+      t.notes,
+    ];
   });
 
-  const csv = [headers.join(','), ...rows].join('\n');
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="transactions.csv"');
-  res.send(csv);
+  sendCSV(res, 'transactions.csv', headers, rows);
 };
 
 export const exportFunctions = async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.userId;
   const functions = await FunctionEvent.find({ userId }).sort({ date: -1 }).lean();
+  const totals = await getTotalsByFunction(
+    userId,
+    functions.map((f) => f._id)
+  );
 
-  const headers = ['Name', 'Type', 'Date', 'Location', 'Notes'];
-  const rows = functions.map((f) => [
-    escapeCSV(f.name),
-    escapeCSV(f.type),
-    formatDate(f.date),
-    escapeCSV(f.location),
-    escapeCSV(f.notes),
-  ].join(','));
+  const headers = ['Name', 'Category', 'Type', 'Date', 'Time', 'Location', 'People', 'Received', 'Given', 'Notes'];
+  const rows = functions.map((f) => {
+    const t = totals[f._id.toString()];
+    return [
+      f.name,
+      f.category === 'RELATIVE' ? 'Relative Function' : 'Our Function',
+      f.type,
+      formatDate(f.date),
+      f.time,
+      f.location,
+      t?.peopleCount || 0,
+      t?.received || 0,
+      t?.given || 0,
+      f.notes,
+    ];
+  });
 
-  const csv = [headers.join(','), ...rows].join('\n');
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="functions.csv"');
-  res.send(csv);
+  sendCSV(res, 'functions.csv', headers, rows);
 };
