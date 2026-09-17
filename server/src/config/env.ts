@@ -8,9 +8,9 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
-const sameSiteRaw = (process.env.COOKIE_SAME_SITE || 'lax').toLowerCase();
+const sameSiteRaw = (process.env.COOKIE_SAME_SITE || 'none').toLowerCase();
 const cookieSameSite: 'lax' | 'strict' | 'none' =
-  sameSiteRaw === 'none' ? 'none' : sameSiteRaw === 'strict' ? 'strict' : 'lax';
+  sameSiteRaw === 'lax' ? 'lax' : sameSiteRaw === 'strict' ? 'strict' : 'none';
 
 export const env = {
   port: parseInt(process.env.PORT || '5000', 10),

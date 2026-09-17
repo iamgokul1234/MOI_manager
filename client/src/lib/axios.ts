@@ -14,12 +14,22 @@ const api = axios.create({
   timeout: 20_000,
 });
 
+// Attach Bearer token if present in localStorage as a fallback for cross-site cookie blocking.
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token && config.headers) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 // Redirect to /login when the session is gone (but not for auth endpoints,
 // which handle 401 themselves).
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (axios.isAxiosError(error) && error.response?.status === 401) {
+      localStorage.removeItem('token');
       const url = error.config?.url || '';
       const onAuthPage = /^\/(login|register)/.test(window.location.pathname);
       if (!url.includes('/auth/') && !onAuthPage) {

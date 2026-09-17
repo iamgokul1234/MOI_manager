@@ -8,7 +8,9 @@ import { AuthPayload, AuthRequest } from '../types';
  * Every protected route relies on req.user.userId to scope its queries.
  */
 export const authenticate = (req: AuthRequest, res: Response, next: NextFunction): void => {
-  const token = req.cookies?.token as string | undefined;
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : undefined;
+  const token = req.cookies?.token || bearerToken;
 
   if (!token) {
     res.status(401).json({ success: false, message: 'Authentication required' });

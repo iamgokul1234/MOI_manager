@@ -19,7 +19,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
   const qc = useQueryClient();
 
-  // Hydrate the session from the HTTP-only cookie on first load.
+  // Hydrate the session from the HTTP-only cookie or Bearer token on first load.
   useEffect(() => {
     let cancelled = false;
     authApi
@@ -28,7 +28,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!cancelled) setUser(res.data);
       })
       .catch(() => {
-        if (!cancelled) setUser(null);
+        if (!cancelled) {
+          localStorage.removeItem('token');
+          setUser(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -41,6 +44,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = useCallback(
     async (email: string, password: string) => {
       const res = await authApi.login({ email, password });
+      if (res.data?.token) {
+        localStorage.setItem('token', res.data.token);
+      }
       qc.clear();
       setUser(res.data);
     },
@@ -50,6 +56,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const register = useCallback(
     async (name: string, email: string, password: string) => {
       const res = await authApi.register({ name, email, password });
+      if (res.data?.token) {
+        localStorage.setItem('token', res.data.token);
+      }
       qc.clear();
       setUser(res.data);
     },
@@ -60,6 +69,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await authApi.logout();
     } finally {
+      localStorage.removeItem('token');
       qc.clear();
       setUser(null);
     }

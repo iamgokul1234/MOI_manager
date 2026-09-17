@@ -45,7 +45,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
   res.status(201).json({
     success: true,
-    data: publicUser(user),
+    data: { ...publicUser(user), token },
     message: 'Account created successfully',
   });
 };
@@ -69,7 +69,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
   res.json({
     success: true,
-    data: publicUser(user),
+    data: { ...publicUser(user), token },
     message: 'Logged in successfully',
   });
 };
