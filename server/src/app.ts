@@ -42,7 +42,11 @@ app.use(cookieParser());
 
 app.use('/api', generalRateLimiter);
 
-// Health check
+// Root & Health check
+app.get('/', (_req, res) => {
+  res.json({ success: true, message: 'Moi Management API Server is live', docs: '/api/health' });
+});
+
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'Moi Management API is running', timestamp: new Date() });
 });
