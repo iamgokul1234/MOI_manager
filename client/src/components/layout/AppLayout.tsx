@@ -10,23 +10,17 @@ export const AppLayout: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Desktop sidebar */}
       <Sidebar onAddMoi={() => setShowAddMoi(true)} />
-
-      {/* Mobile header */}
       <Header />
 
-      {/* Main content */}
-      <main className="md:ml-64 pt-14 md:pt-0 pb-20 md:pb-0">
-        <div className="max-w-6xl mx-auto px-4 py-6">
+      <main className="md:ml-64 pt-14 md:pt-0 pb-24 md:pb-8 min-h-screen">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-5 md:py-8">
           <Outlet />
         </div>
       </main>
 
-      {/* Mobile bottom nav */}
       <BottomNav onAddMoi={() => setShowAddMoi(true)} />
 
-      {/* Global Add Moi modal */}
       <AddMoiModal isOpen={showAddMoi} onClose={() => setShowAddMoi(false)} />
     </div>
   );

@@ -1,29 +1,31 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle } from 'lucide-react';
 import { peopleApi } from '@/api/people';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Textarea } from '@/components/ui/Textarea';
 import { useToast } from '@/components/ui/Toast';
+import { getErrorMessage, getPersonName } from '@/lib/utils';
+import { invalidateMoiData, qk } from '@/lib/queryClient';
 import type { Person } from '@/types';
-import { AlertTriangle } from 'lucide-react';
 
 const schema = z
   .object({
-    area: z.string().min(1, 'Area is required'),
-    husbandName: z.string().optional(),
-    wifeName: z.string().optional(),
-    phone: z.string().optional(),
-    alternatePhone: z.string().optional(),
-    address: z.string().optional(),
-    notes: z.string().optional(),
+    husbandName: z.string().trim().max(100).optional(),
+    wifeName: z.string().trim().max(100).optional(),
+    area: z.string().trim().min(1, 'Area is required').max(100),
+    phone: z.string().trim().max(20).optional(),
+    alternatePhone: z.string().trim().max(20).optional(),
+    address: z.string().trim().max(500).optional(),
+    notes: z.string().trim().max(1000).optional(),
   })
-  .refine((d) => d.husbandName || d.wifeName, {
-    message: 'At least one of Husband Name or Wife Name is required',
+  .refine((d) => (d.husbandName && d.husbandName.length > 0) || (d.wifeName && d.wifeName.length > 0), {
+    message: 'Enter at least the husband’s or the wife’s name',
     path: ['husbandName'],
   });
 
@@ -32,98 +34,107 @@ type FormData = z.infer<typeof schema>;
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+  /** Present → edit mode. */
   person?: Person | null;
+  /** Pre-fills the husband name when creating from a typeahead's "Add new" action. */
+  seedName?: string;
+  onCreated?: (person: Person) => void;
 }
 
-export const AddEditPersonModal: React.FC<Props> = ({ isOpen, onClose, person }) => {
+const empty: FormData = {
+  husbandName: '',
+  wifeName: '',
+  area: '',
+  phone: '',
+  alternatePhone: '',
+  address: '',
+  notes: '',
+};
+
+export const AddEditPersonModal: React.FC<Props> = ({ isOpen, onClose, person, seedName, onCreated }) => {
   const isEdit = !!person;
   const { success, error } = useToast();
   const qc = useQueryClient();
-  const [duplicates, setDuplicates] = React.useState<Person[]>([]);
-  const [showDuplicateWarning, setShowDuplicateWarning] = React.useState(false);
-  const [pendingData, setPendingData] = React.useState<FormData | null>(null);
+  const [duplicates, setDuplicates] = useState<Person[]>([]);
+  const [pending, setPending] = useState<FormData | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const {
     register,
     handleSubmit,
     reset,
     formState: { errors },
-  } = useForm<FormData>({ resolver: zodResolver(schema) });
+  } = useForm<FormData>({ resolver: zodResolver(schema), defaultValues: empty });
 
   useEffect(() => {
+    if (!isOpen) return;
+    setDuplicates([]);
+    setPending(null);
     if (person) {
       reset({
-        area: person.area,
         husbandName: person.husbandName || '',
         wifeName: person.wifeName || '',
+        area: person.area,
         phone: person.phone || '',
         alternatePhone: person.alternatePhone || '',
         address: person.address || '',
         notes: person.notes || '',
       });
     } else {
-      reset({});
+      reset({ ...empty, husbandName: seedName || '' });
     }
-    setDuplicates([]);
-    setShowDuplicateWarning(false);
-  }, [person, isOpen, reset]);
+  }, [person, isOpen, seedName, reset]);
 
   const createMutation = useMutation({
     mutationFn: (data: FormData) => peopleApi.create(data),
-    onSuccess: () => {
-      success('Person added successfully');
-      qc.invalidateQueries({ queryKey: ['people'] });
-      qc.invalidateQueries({ queryKey: ['dashboard'] });
+    onSuccess: (res) => {
+      success(`${getPersonName(res.data)} added`);
+      qc.invalidateQueries({ queryKey: qk.people });
+      qc.invalidateQueries({ queryKey: qk.areas });
+      qc.invalidateQueries({ queryKey: qk.dashboard });
+      onCreated?.(res.data);
       onClose();
     },
-    onError: (err: unknown) => {
-      const msg = err && typeof err === 'object' && 'response' in err
-        ? (err as { response?: { data?: { message?: string } } }).response?.data?.message
-        : 'Failed to add person';
-      error(msg || 'Failed to add person');
-    },
+    onError: (err) => error(getErrorMessage(err, 'Could not add the person')),
   });
 
   const updateMutation = useMutation({
     mutationFn: (data: FormData) => peopleApi.update(person!._id, data),
     onSuccess: () => {
-      success('Person updated successfully');
-      qc.invalidateQueries({ queryKey: ['people'] });
-      qc.invalidateQueries({ queryKey: ['person', person!._id] });
+      success('Person updated');
+      invalidateMoiData(qc, { personId: person!._id });
+      qc.invalidateQueries({ queryKey: qk.areas });
       onClose();
     },
-    onError: (err: unknown) => {
-      const msg = err && typeof err === 'object' && 'response' in err
-        ? (err as { response?: { data?: { message?: string } } }).response?.data?.message
-        : 'Failed to update person';
-      error(msg || 'Failed to update person');
-    },
+    onError: (err) => error(getErrorMessage(err, 'Could not update the person')),
   });
 
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = createMutation.isPending || updateMutation.isPending || checking;
 
   const doSubmit = (data: FormData) => {
-    if (isEdit) {
-      updateMutation.mutate(data);
-    } else {
-      createMutation.mutate(data);
-    }
+    if (isEdit) updateMutation.mutate(data);
+    else createMutation.mutate(data);
   };
 
+  // Non-blocking duplicate detection: warn, then let the user decide.
   const onSubmit = async (data: FormData) => {
-    if (!isEdit) {
-      // Check for duplicates
+    setChecking(true);
+    try {
       const res = await peopleApi.checkDuplicate({
         husbandName: data.husbandName,
         wifeName: data.wifeName,
         area: data.area,
+        excludeId: person?._id,
       });
       if (res.data.duplicates.length > 0) {
         setDuplicates(res.data.duplicates);
-        setShowDuplicateWarning(true);
-        setPendingData(data);
+        setPending(data);
         return;
       }
+    } catch {
+      // If the check itself fails, don't block saving.
+    } finally {
+      setChecking(false);
     }
     doSubmit(data);
   };
@@ -131,99 +142,99 @@ export const AddEditPersonModal: React.FC<Props> = ({ isOpen, onClose, person })
   return (
     <>
       <Modal
-        isOpen={isOpen && !showDuplicateWarning}
+        isOpen={isOpen && duplicates.length === 0}
         onClose={onClose}
         title={isEdit ? 'Edit Person' : 'Add Person'}
+        description="A family record. Either name is enough."
         size="md"
       >
-        <form onSubmit={handleSubmit(onSubmit)} className="p-6 space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit(onSubmit)} className="p-5 sm:p-6 space-y-4" noValidate>
+          <div className="grid grid-cols-2 gap-3">
             <Input
-              label="Husband's Name"
+              label="Husband's name"
               id="husband-name"
               placeholder="e.g. Ravi"
+              autoComplete="off"
               error={errors.husbandName?.message}
               {...register('husbandName')}
             />
-            <Input
-              label="Wife's Name"
-              id="wife-name"
-              placeholder="e.g. Meena"
-              {...register('wifeName')}
-            />
+            <Input label="Wife's name" id="wife-name" placeholder="e.g. Meena" autoComplete="off" {...register('wifeName')} />
           </div>
           <Input
             label="Area"
             id="area"
             placeholder="e.g. Tiruppur"
             required
+            autoComplete="off"
             error={errors.area?.message}
             {...register('area')}
           />
-          <div className="grid grid-cols-2 gap-4">
-            <Input label="Phone" id="phone" placeholder="Mobile number" {...register('phone')} />
-            <Input
-              label="Alternate Phone"
-              id="alt-phone"
-              placeholder="Alternate"
-              {...register('alternatePhone')}
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Phone" id="phone" type="tel" inputMode="tel" placeholder="Mobile number" {...register('phone')} />
+            <Input label="Alternate phone" id="alt-phone" type="tel" inputMode="tel" placeholder="Optional" {...register('alternatePhone')} />
           </div>
-          <Input label="Address" id="address" placeholder="Full address" {...register('address')} />
+          <Input label="Address" id="address" placeholder="Street, town" {...register('address')} />
           <Textarea
             label="Notes"
             id="person-notes"
-            placeholder="Any notes about this family…"
+            placeholder="How you know them, anything to remember…"
             rows={2}
             {...register('notes')}
           />
 
           <div className="flex gap-3 pt-2">
-            <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
+            <Button type="button" variant="outline" className="flex-1" onClick={onClose} disabled={isPending}>
               Cancel
             </Button>
             <Button type="submit" className="flex-1" loading={isPending}>
-              {isEdit ? 'Save Changes' : 'Add Person'}
+              {isEdit ? 'Save changes' : 'Add Person'}
             </Button>
           </div>
         </form>
       </Modal>
 
-      {/* Duplicate warning */}
-      {showDuplicateWarning && (
-        <Modal isOpen={true} onClose={() => setShowDuplicateWarning(false)} title="Possible Duplicate Found" size="sm">
-          <div className="p-6">
-            <div className="flex items-center gap-2 mb-3 text-amber-600">
-              <AlertTriangle className="h-5 w-5" />
-              <p className="text-sm font-semibold">A similar person already exists</p>
-            </div>
-            <div className="space-y-2 mb-4">
-              {duplicates.map((d) => (
-                <div key={d._id} className="bg-amber-50 rounded-lg px-3 py-2 text-sm">
-                  <p className="font-medium">{[d.husbandName, d.wifeName].filter(Boolean).join(' & ')}</p>
-                  <p className="text-xs text-gray-500">{d.area}</p>
-                </div>
-              ))}
-            </div>
-            <p className="text-sm text-gray-600 mb-4">
-              Do you want to create a new entry anyway?
-            </p>
-            <div className="flex gap-3">
-              <Button variant="outline" className="flex-1" onClick={() => setShowDuplicateWarning(false)}>
-                Go Back
-              </Button>
-              <Button
-                variant="primary"
-                className="flex-1"
-                onClick={() => { setShowDuplicateWarning(false); if (pendingData) doSubmit(pendingData); }}
-                loading={isPending}
-              >
-                Create Anyway
-              </Button>
-            </div>
+      <Modal
+        isOpen={duplicates.length > 0}
+        onClose={() => setDuplicates([])}
+        title="Possible duplicate"
+        size="sm"
+      >
+        <div className="p-5 sm:p-6">
+          <div className="flex items-center gap-2 mb-3 text-amber-700">
+            <AlertTriangle className="h-5 w-5" />
+            <p className="text-sm font-semibold">A similar person already exists</p>
           </div>
-        </Modal>
-      )}
+          <div className="space-y-2 mb-4">
+            {duplicates.map((d) => (
+              <div key={d._id} className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 text-sm">
+                <p className="font-medium text-gray-900">{getPersonName(d)}</p>
+                <p className="text-xs text-gray-500">
+                  {d.area}
+                  {d.phone && ` · ${d.phone}`}
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="text-sm text-gray-600 mb-5">
+            {isEdit ? 'Save these changes anyway?' : 'Is this the same family? You can still create a new entry.'}
+          </p>
+          <div className="flex gap-3">
+            <Button variant="outline" className="flex-1" onClick={() => setDuplicates([])}>
+              Go back
+            </Button>
+            <Button
+              className="flex-1"
+              onClick={() => {
+                setDuplicates([]);
+                if (pending) doSubmit(pending);
+              }}
+              loading={isPending}
+            >
+              {isEdit ? 'Save anyway' : 'Create anyway'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 };

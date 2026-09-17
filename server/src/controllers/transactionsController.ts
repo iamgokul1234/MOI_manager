@@ -143,8 +143,8 @@ export const createTransaction = async (req: AuthRequest, res: Response): Promis
     type,
     amount,
     transactionDate: new Date(transactionDate),
-    // Recording live implies presence, so attended defaults to true.
-    attended: attended ?? true,
+    // Default to false so rows are not automatically struck out until manually checked.
+    attended: attended ?? false,
     notes,
   });
 
@@ -187,13 +187,18 @@ export const updateAttendance = async (req: AuthRequest, res: Response): Promise
     return;
   }
 
+  if (transaction.attended && !result.data.attended) {
+    res.status(400).json({ success: false, message: 'Once checked, status cannot be undone' });
+    return;
+  }
+
   transaction.attended = result.data.attended;
   await transaction.save();
 
   res.json({
     success: true,
     data: { _id: transaction._id, attended: transaction.attended },
-    message: result.data.attended ? 'Marked as attended' : 'Marked as not attended',
+    message: result.data.attended ? 'Marked as checked' : 'Marked as unchecked',
   });
 };
 

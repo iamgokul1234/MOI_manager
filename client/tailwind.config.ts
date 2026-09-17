@@ -1,53 +1,70 @@
-/** @type {import('tailwindcss').Config} */
-export default {
+import type { Config } from 'tailwindcss';
+
+/**
+ * Design tokens
+ * - primary: one warm, friendly accent (sunset orange) for primary actions and active nav
+ * - received: emerald  |  given: rose  — always paired with a text label or icon, never colour alone
+ * - neutrals: gray-50 page, white cards, gray-200 borders
+ */
+const config: Config = {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
         primary: {
-          50: '#eef2ff',
-          100: '#e0e7ff',
-          200: '#c7d2fe',
-          300: '#a5b4fc',
-          400: '#818cf8',
-          500: '#6366f1',
-          600: '#4f46e5',
-          700: '#4338ca',
-          800: '#3730a3',
-          900: '#312e81',
-          950: '#1e1b4b',
+          50: '#fff7ed',
+          100: '#ffedd5',
+          200: '#fed7aa',
+          300: '#fdba74',
+          400: '#fb923c',
+          500: '#f97316',
+          600: '#ea580c',
+          700: '#c2410c',
+          800: '#9a3412',
+          900: '#7c2d12',
+          950: '#431407',
         },
         received: {
           50: '#ecfdf5',
           100: '#d1fae5',
+          200: '#a7f3d0',
+          300: '#6ee7b7',
+          400: '#34d399',
           500: '#10b981',
           600: '#059669',
           700: '#047857',
+          800: '#065f46',
         },
         given: {
-          50: '#fff7ed',
-          100: '#ffedd5',
-          500: '#f97316',
-          600: '#ea580c',
-          700: '#c2410c',
+          50: '#fff1f2',
+          100: '#ffe4e6',
+          200: '#fecdd3',
+          300: '#fda4af',
+          400: '#fb7185',
+          500: '#f43f5e',
+          600: '#e11d48',
+          700: '#be123c',
+          800: '#9f1239',
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+      },
+      fontSize: {
+        base: ['1rem', { lineHeight: '1.6' }],
       },
       borderRadius: {
         xl: '0.875rem',
         '2xl': '1.25rem',
       },
       boxShadow: {
-        card: '0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.08)',
-        'card-hover': '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)',
+        card: '0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06)',
+        'card-hover': '0 6px 16px -4px rgb(0 0 0 / 0.12)',
       },
       animation: {
-        'fade-in': 'fadeIn 0.2s ease-in-out',
-        'slide-up': 'slideUp 0.3s ease-out',
-        'slide-in': 'slideIn 0.3s ease-out',
-        'spin-slow': 'spin 1.5s linear infinite',
+        'fade-in': 'fadeIn 0.18s ease-out',
+        'slide-up': 'slideUp 0.22s ease-out',
+        'slide-in': 'slideIn 0.22s ease-out',
       },
       keyframes: {
         fadeIn: {
@@ -67,3 +84,5 @@ export default {
   },
   plugins: [],
 };
+
+export default config;

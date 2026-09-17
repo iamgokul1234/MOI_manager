@@ -37,7 +37,7 @@ const transactionSchema = new Schema<ITransaction>(
       },
     },
     transactionDate: { type: Date, required: true },
-    attended: { type: Boolean, default: true },
+    attended: { type: Boolean, default: false },
     notes: { type: String, trim: true },
   },
   { timestamps: true }

@@ -13,6 +13,7 @@ import { FunctionModePage } from '@/features/functionMode/FunctionModePage';
 import { TransactionsPage } from '@/features/transactions/TransactionsPage';
 import { ReportsPage } from '@/features/reports/ReportsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { NotFoundPage } from '@/pages/NotFoundPage';
 
 export const AppRouter: React.FC = () => {
   return (
@@ -53,7 +54,7 @@ export const AppRouter: React.FC = () => {
         </Route>
 
         {/* Catch-all */}
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </BrowserRouter>
   );

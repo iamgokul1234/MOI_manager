@@ -1,5 +1,12 @@
 import api from '@/lib/axios';
-import type { ApiResponse, DashboardData, ReportSummary, FunctionReport, AreaReport, YearlyReport } from '@/types';
+import type {
+  ApiResponse,
+  DashboardData,
+  ReportSummary,
+  FunctionReport,
+  AreaReport,
+  YearlyReport,
+} from '@/types';
 
 export const dashboardApi = {
   get: async () => {
@@ -24,10 +31,15 @@ export const reportsApi = {
     return res.data;
   },
 
-  yearly: async (year?: string) => {
+  yearly: async (year: string = 'all') => {
     const res = await api.get<ApiResponse<YearlyReport[]>>('/reports/yearly', {
-      params: year ? { year } : {},
+      params: { year },
     });
+    return res.data;
+  },
+
+  years: async () => {
+    const res = await api.get<ApiResponse<number[]>>('/reports/years');
     return res.data;
   },
 };

@@ -12,7 +12,7 @@ interface PaginationProps {
 export const Pagination: React.FC<PaginationProps> = ({ pagination, onPageChange, className }) => {
   const { page, totalPages, total, limit } = pagination;
 
-  if (totalPages <= 1) return null;
+  if (total === 0) return null;
 
   const from = (page - 1) * limit + 1;
   const to = Math.min(page * limit, total);
@@ -34,49 +34,59 @@ export const Pagination: React.FC<PaginationProps> = ({ pagination, onPageChange
   };
 
   return (
-    <div className={cn('flex items-center justify-between gap-4 flex-wrap', className)}>
+    <nav
+      aria-label="Pagination"
+      className={cn('flex items-center justify-between gap-4 flex-wrap', className)}
+    >
       <p className="text-sm text-gray-500">
-        Showing <span className="font-medium">{from}–{to}</span> of{' '}
-        <span className="font-medium">{total}</span> results
+        Showing{' '}
+        <span className="font-medium text-gray-700">
+          {from}–{to}
+        </span>{' '}
+        of <span className="font-medium text-gray-700">{total}</span>
       </p>
-      <div className="flex items-center gap-1">
-        <button
-          onClick={() => onPageChange(page - 1)}
-          disabled={page === 1}
-          className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          aria-label="Previous page"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-        {getPageNumbers().map((p, i) =>
-          p === '...' ? (
-            <span key={`ellipsis-${i}`} className="px-2 text-gray-400 text-sm">
-              …
-            </span>
-          ) : (
-            <button
-              key={p}
-              onClick={() => onPageChange(p as number)}
-              className={cn(
-                'w-8 h-8 rounded-lg text-sm font-medium transition-colors',
-                p === page
-                  ? 'bg-primary-600 text-white'
-                  : 'text-gray-600 hover:bg-gray-100'
-              )}
-            >
-              {p}
-            </button>
-          )
-        )}
-        <button
-          onClick={() => onPageChange(page + 1)}
-          disabled={page === totalPages}
-          className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          aria-label="Next page"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
-      </div>
-    </div>
+      {totalPages > 1 && (
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onPageChange(page - 1)}
+            disabled={page === 1}
+            className="h-9 w-9 inline-flex items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            aria-label="Previous page"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          {getPageNumbers().map((p, i) =>
+            p === '...' ? (
+              <span key={`ellipsis-${i}`} className="px-2 text-gray-400 text-sm">
+                …
+              </span>
+            ) : (
+              <button
+                key={p}
+                type="button"
+                onClick={() => onPageChange(p)}
+                aria-current={p === page ? 'page' : undefined}
+                className={cn(
+                  'h-9 min-w-[36px] px-2 rounded-lg text-sm font-medium transition-colors',
+                  p === page ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+                )}
+              >
+                {p}
+              </button>
+            )
+          )}
+          <button
+            type="button"
+            onClick={() => onPageChange(page + 1)}
+            disabled={page === totalPages}
+            className="h-9 w-9 inline-flex items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            aria-label="Next page"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+    </nav>
   );
 };
