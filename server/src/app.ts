@@ -25,8 +25,12 @@ app.use(helmet());
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow same-origin / non-browser requests (no Origin header) and listed origins.
-      if (!origin || env.clientUrls.includes(origin)) return callback(null, true);
+      // Allow same-origin / non-browser requests (no Origin header)
+      if (!origin) return callback(null, true);
+      const cleanOrigin = origin.trim().replace(/\/+$/, '');
+      if (env.clientUrls.includes(cleanOrigin) || cleanOrigin.endsWith('.vercel.app')) {
+        return callback(null, true);
+      }
       return callback(new Error(`Origin ${origin} is not allowed by CORS`));
     },
     credentials: true,

@@ -21,7 +21,7 @@ export const env = {
   /** Comma-separated list of allowed browser origins. */
   clientUrls: (process.env.CLIENT_URL || 'http://localhost:5173')
     .split(',')
-    .map((s) => s.trim())
+    .map((s) => s.trim().replace(/\/+$/, ''))
     .filter(Boolean),
   /**
    * 'lax' for same-site deployments (default). Set to 'none' when the API and
